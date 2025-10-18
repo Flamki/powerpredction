@@ -1,11 +1,11 @@
 # app.py
-from dash import Dash, html, dcc
+from dash import Dash, html, dcc, Input, Output  # <-- Import Input and Output here
 import pandas as pd
 import joblib
 import plotly.graph_objs as go
 
 app = Dash(__name__)
-server = app.server  # <--- Important for Vercel
+server = app.server  # Important for Vercel
 
 # Load model and datasets
 daily_model = joblib.load('arima_power_model_daily.pkl')
@@ -21,12 +21,12 @@ app.layout = html.Div([
 
 # Example callback to plot daily forecast
 @app.callback(
-    dash.dependencies.Output('daily-forecast-graph', 'figure'),
-    dash.dependencies.Input('daily-forecast-graph', 'id')
+    Output('daily-forecast-graph', 'figure'),  # Use Output imported from dash
+    Input('daily-forecast-graph', 'id')       # Use Input imported from dash
 )
 def update_graph(_):
     forecast = daily_model.predict(n_periods=30)
-    forecast_index = pd.date_range(start=df_daily.index[-1]+pd.Timedelta(days=1), periods=30, freq='D')
+    forecast_index = pd.date_range(start=df_daily.index[-1] + pd.Timedelta(days=1), periods=30, freq='D')
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=forecast_index, y=forecast, mode='lines', name='Forecast'))
     fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily['power_demand'], mode='lines', name='Actual'))
