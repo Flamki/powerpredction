@@ -1,0 +1,3 @@
+# to run this app : python -m streamlit run app.py
+
+# do download requirement.txt : python -m pip install -r requirements.txt
