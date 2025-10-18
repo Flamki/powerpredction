@@ -8,6 +8,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 import numpy as np
 
 # ---------------------------
+# Streamlit Page Config (FIRST COMMAND)
+# ---------------------------
+st.set_page_config(page_title="Power Demand Dashboard", layout="wide")
+
+# ---------------------------
 # Setup paths
 # ---------------------------
 BASE_DIR = os.path.dirname(__file__)
@@ -32,10 +37,8 @@ df_daily = load_csv(DAILY_CSV)
 df_hourly = load_csv(HOURLY_CSV)
 
 # ---------------------------
-# Streamlit Layout
+# Layout
 # ---------------------------
-st.set_page_config(page_title="Power Demand Dashboard", layout="wide")
-
 st.title("⚡ Power Demand Dashboard")
 st.markdown("### Forecast vs Actual Power Demand (Daily)")
 
@@ -43,8 +46,6 @@ st.markdown("### Forecast vs Actual Power Demand (Daily)")
 # Forecast (Next 30 Days)
 # ---------------------------
 n_forecast_days = 30
-
-# Generate forecast
 forecast = daily_model.predict(n_periods=n_forecast_days)
 forecast_index = pd.date_range(
     start=df_daily.index[-1] + pd.Timedelta(days=1),
@@ -90,7 +91,6 @@ st.plotly_chart(fig, use_container_width=True)
 # ---------------------------
 st.markdown("### 📊 Model Performance (Last 30 Days)")
 try:
-    # Compare last actuals to forecast length
     actual_recent = df_daily['power_demand'][-n_forecast_days:]
     mae = mean_absolute_error(actual_recent, forecast[:len(actual_recent)])
     mse = mean_squared_error(actual_recent, forecast[:len(actual_recent)])
