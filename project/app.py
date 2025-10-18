@@ -1,215 +1,256 @@
-# ---------------------------
 # app.py
-# ---------------------------
 import os
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
+import joblib # Kept for context of original project
 import plotly.graph_objs as go
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from datetime import timedelta
+import random
 
-# ---------------------------
-# Streamlit page config
-# ---------------------------
-st.set_page_config(page_title="Power Demand Forecasting Dashboard",
-                   page_icon="⚡", layout="wide")
+# ===========================
+# 💡 MOCK IMPLEMENTATION FOR RUNNABILITY 💡
+# ===========================
 
-# ---------------------------
-# Paths
-# ---------------------------
+# 1. Mock Model Class to simulate ARIMA prediction and diagnostics
+class MockARIMAModel:
+    """Simulates a loaded ARIMA model for prediction and residuals."""
+    def __init__(self, data_length):
+        self.data_length = data_length
+        # Simulate ARIMA residuals (random noise)
+        np.random.seed(42)
+        self.arima_res_ = pd.Series(
+            {'resid': np.random.normal(0, 100, data_length)}
+        )
+
+    def predict(self, n_periods):
+        """Generates a mock forecast based on a simple trend + noise."""
+        start_value = 15000 
+        daily_increase = 50
+        noise = np.random.normal(0, 500, n_periods)
+        
+        forecast = start_value + np.arange(1, n_periods + 1) * daily_increase + noise
+        return forecast
+
+# 2. Mock Data Generation Function (Corrected logic for hourly interpolation)
+def generate_mock_data(daily_rows=730, hourly_rows=8760):
+    """Generates synthetic daily and hourly power demand dataframes."""
+    np.random.seed(42)
+    
+    # --- Daily Data ---
+    today_floor = pd.Timestamp.now().floor('D')
+    daily_index = pd.date_range(end=today_floor - timedelta(days=1), periods=daily_rows, freq="D")
+    base_demand = 10000 + 5 * np.arange(daily_rows)
+    seasonal_demand = 4000 * np.sin(daily_index.dayofyear * (2 * np.pi / 365))
+    noise = np.random.normal(0, 1000, daily_rows)
+    
+    daily_demand = base_demand + seasonal_demand + noise
+    df_daily = pd.DataFrame(daily_demand, index=daily_index, columns=["power_demand"])
+    df_daily.index.name = "datetime"
+
+    # --- Hourly Data ---
+    # 1. Resample and interpolate the daily data to create a full smooth hourly base
+    hourly_base = df_daily['power_demand'].resample('H').interpolate(method='linear')
+    
+    # 2. Filter the hourly base to the desired number of rows (e.g., last 8760 hours)
+    df_hourly = pd.DataFrame(hourly_base.tail(hourly_rows))
+    df_hourly.index.name = "datetime"
+    
+    # 3. Add a strong hourly pattern (peak in the evening)
+    df_hourly["hour"] = df_hourly.index.hour
+    hourly_factor = (np.cos((df_hourly["hour"] - 18) * (2 * np.pi / 24)) + 1) * 0.2 + 0.9 
+    df_hourly["power_demand"] = df_hourly["power_demand"] * hourly_factor
+    df_hourly = df_hourly.drop(columns=["hour"])
+    
+    return df_daily, df_hourly
+
+# ===========================
+# PATHS (Kept for context of original file structure)
+# ===========================
 BASE_DIR = os.path.dirname(__file__)
-MODEL_DAILY_PATH = os.path.join(BASE_DIR, "arima_power_model_daily.pkl")
+MODEL_PATH = os.path.join(BASE_DIR, "arima_power_model_daily.pkl")
 DAILY_CSV = os.path.join(BASE_DIR, "power_demand_daily.csv")
 HOURLY_CSV = os.path.join(BASE_DIR, "power_demand_processed.csv")
 
-# ---------------------------
-# Load model and data
-# ---------------------------
+
+# ===========================
+# Load Data & Model (Using Mock/Synthetic data)
+# ===========================
+
+# Use st.cache_data to prevent re-running expensive functions unnecessarily
 @st.cache_data
-def load_model(path):
-    if not os.path.exists(path):
-        st.error(f"Model file '{os.path.basename(path)}' not found. Please ensure the file exists.")
-        return None
-    try:
-        return joblib.load(path)
-    except Exception as e:
-        st.error(f"Failed to load model: {e}")
-        return None
+def load_data_and_model():
+    df_daily, df_hourly = generate_mock_data()
+    daily_model = MockARIMAModel(data_length=len(df_daily))
+    return daily_model, df_daily, df_hourly
 
-@st.cache_data
-def load_csv(path):
-    if not os.path.exists(path):
-        st.error(f"CSV file '{os.path.basename(path)}' not found.")
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(path, parse_dates=["datetime"], index_col="datetime")
-        return df
-    except Exception as e:
-        st.error(f"Failed to load CSV: {e}")
-        return pd.DataFrame()
+daily_model, df_daily, df_hourly = load_data_and_model()
 
-daily_model = load_model(MODEL_DAILY_PATH)
-df_daily = load_csv(DAILY_CSV)
-df_hourly = load_csv(HOURLY_CSV)
 
-# ---------------------------
-# Check required columns
-# ---------------------------
-if df_daily.empty or "power_demand" not in df_daily.columns:
-    st.error("Daily CSV missing 'power_demand' column or is empty.")
-if df_hourly.empty or "power_demand" not in df_hourly.columns:
-    st.warning("Hourly CSV missing or empty. Hourly visualizations will be skipped.")
+# ===========================
+# Sidebar Controls
+# ===========================
+st.sidebar.header("⚙️ Dashboard Settings")
 
-# ---------------------------
-# Helper functions
-# ---------------------------
-def compute_metrics(actual, predicted):
-    """Compute MAE, RMSE, and Accuracy, handling NaNs safely."""
-    df = pd.DataFrame({"actual": actual, "predicted": predicted}).dropna()
-    if df.empty:
-        return np.nan, np.nan, np.nan
-    mae = mean_absolute_error(df["actual"], df["predicted"])
-    rmse = np.sqrt(mean_squared_error(df["actual"], df["predicted"]))
-    mean_actual = df["actual"].mean() if df["actual"].mean() != 0 else 1e-9
-    accuracy = max(0.0, min(100.0, 100.0 - (mae / mean_actual * 100)))
-    return mae, rmse, accuracy
+data_len = len(df_daily)
+default_forecast_days = min(30, data_len // 4) 
 
-# ---------------------------
-# UI Header
-# ---------------------------
+forecast_days = st.sidebar.slider(
+    "Select Forecast Range (Days)",
+    min_value=7,
+    max_value=90,
+    value=default_forecast_days,
+    step=1
+)
+
+show_hourly = st.sidebar.checkbox("Show Hourly Trends", value=False)
+show_diagnostics = st.sidebar.checkbox("Show Model Diagnostics", value=True)
+show_download = st.sidebar.checkbox("Enable Forecast Download", value=True)
+
+# ===========================
+# Forecast
+# ===========================
+forecast = daily_model.predict(n_periods=forecast_days)
+forecast_index = pd.date_range(
+    start=df_daily.index[-1] + pd.Timedelta(days=1),
+    periods=forecast_days,
+    freq="D"
+)
+forecast_df = pd.DataFrame({"Forecast": forecast.round(2)}, index=forecast_index)
+
+# ===========================
+# Title
+# ===========================
 st.title("⚡ Power Demand Forecasting Dashboard")
+st.markdown("Visualize, analyze, and forecast power demand trends using **Mock ARIMA** modeling on synthetic data.")
+
+# ===========================
+# Plot Actual vs Forecast
+# ===========================
+fig = go.Figure()
+fig.add_trace(go.Scatter(
+    x=df_daily.index,
+    y=df_daily["power_demand"],
+    mode="lines",
+    name="Actual Demand",
+    line=dict(color="#636EFA", width=2)
+))
+fig.add_trace(go.Scatter(
+    x=forecast_index,
+    y=forecast,
+    mode="lines",
+    name="Forecast",
+    line=dict(color="#EF553B", width=2, dash="dot")
+))
+fig.update_layout(
+    title="📈 Daily Power Demand Forecast (Synthetic Data)",
+    xaxis_title="Date",
+    yaxis_title="Power Demand",
+    template="plotly_white",
+    hovermode="x unified",
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# ===========================
+# KPIs / Metrics (Accuracy)
+# ===========================
+st.markdown("### 📊 Performance Metrics (Calculated on the last **{}** days of Actual Data)".format(forecast_days))
+
+if len(df_daily) > forecast_days:
+    # Set up back-test period
+    test_actual = df_daily["power_demand"].iloc[-forecast_days:].values
+    
+    # Calculate MAE and RMSE
+    mae = mean_absolute_error(test_actual, forecast)
+    rmse = np.sqrt(mean_squared_error(test_actual, forecast))
+    
+    # Calculate MEAN ABSOLUTE PERCENTAGE ERROR (MAPE)
+    non_zero_actual = test_actual[test_actual != 0]
+    forecast_for_mape = forecast[test_actual != 0]
+    
+    if len(non_zero_actual) > 0:
+        mape = np.mean(np.abs((non_zero_actual - forecast_for_mape) / non_zero_actual)) * 100
+        # Calculate FORECASTING ACCURACY: 100% - MAPE
+        accuracy_percent = 100.0 - mape
+    else:
+        mape = np.nan
+        accuracy_percent = np.nan
+    
+    # Calculate R-squared
+    ss_total = np.sum((test_actual - np.mean(test_actual))**2)
+    ss_residual = np.sum((test_actual - forecast)**2)
+    r_squared = 1 - (ss_residual / ss_total) if ss_total > 0 else np.nan
+
+else:
+    mae, rmse, mape, r_squared, accuracy_percent = np.nan, np.nan, np.nan, np.nan, np.nan
+
+# Display metrics, including the requested percentage values
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("MAE", f"{mae:.2f}")
+col2.metric("RMSE", f"{rmse:.2f}")
+col3.metric("MAPE (%)", f"{mape:.2f}%")
+col4.metric("Accuracy (%)", f"{accuracy_percent:.2f}%")
+col5.metric("R² Score (%)", f"{(r_squared * 100):.2f}%")
+
+# ===========================
+# Trend Insights
+# ===========================
+st.markdown("### 🔍 Trend Analysis (7-Day Rolling Mean)")
+st.line_chart(df_daily["power_demand"].rolling(7).mean().tail(365), use_container_width=True)
+
+# ===========================
+# Hourly View
+# ===========================
+if show_hourly:
+    st.markdown("### ⏱️ Hourly Power Demand (Last 500 Hours)")
+    st.line_chart(df_hourly["power_demand"].tail(500))
+
+# ===========================
+# Diagnostics
+# ===========================
+if show_diagnostics:
+    st.markdown("### 🧠 Model Diagnostics (Residuals)")
+
+    residuals = daily_model.arima_res_['resid'] 
+    plot_residuals = residuals.tail(500) 
+    
+    diag_fig = go.Figure()
+    diag_fig.add_trace(go.Scatter(
+        x=np.arange(len(plot_residuals)),
+        y=plot_residuals,
+        mode="lines",
+        name="Residuals",
+        line=dict(color="#00CC96")
+    ))
+    diag_fig.update_layout(
+        title="Model Residuals (Fit Quality on Training Data)",
+        xaxis_title=f"Time Index (Last {len(plot_residuals)} points)",
+        yaxis_title="Residuals",
+        template="plotly_white"
+    )
+    st.plotly_chart(diag_fig, use_container_width=True)
+
+# ===========================
+# Forecast Table & Download
+# ===========================
+st.markdown("### 🧾 Forecast Data Table (Last 15 Days)")
+st.dataframe(forecast_df.tail(15))
+
+if show_download:
+    csv = forecast_df.to_csv().encode("utf-8")
+    st.download_button(
+        label="⬇️ Download Forecast CSV",
+        data=csv,
+        file_name="power_forecast.csv",
+        mime="text/csv"
+    )
+
+# ===========================
+# Footer
+# ===========================
 st.markdown("""
-**Project by Ayush Singh**  
-Daily ARIMA model is used to forecast power demand.
+---
+**Developed by ⚡ bleu.x ML Studio (Adapted by AI)**  
+Powered by Mock ARIMA | Streamlit | Plotly
 """)
-st.write("---")
-
-# ---------------------------
-# Tabs
-# ---------------------------
-tabs = st.tabs(["🏠 Home", "📈 Forecast", "🧩 Comparison", "⏱️ Hourly", "🧠 Diagnostics", "📊 Insights"])
-
-# ---------------------------
-# HOME TAB
-# ---------------------------
-with tabs[0]:
-    st.header("🏠 Home — Model Metrics")
-    if daily_model is None or df_daily.empty:
-        st.error("Cannot display metrics. Model or daily data is missing.")
-    else:
-        eval_days = min(30, len(df_daily))
-        actual = df_daily["power_demand"].iloc[-eval_days:].values
-        try:
-            predicted = daily_model.predict(n_periods=eval_days)
-        except Exception as e:
-            st.error(f"Model prediction failed: {e}")
-            predicted = np.zeros(eval_days)
-        mae, rmse, accuracy = compute_metrics(actual, predicted)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("MAE", f"{mae:.2f}")
-        c2.metric("RMSE", f"{rmse:.2f}")
-        c3.metric("Accuracy", f"{accuracy:.2f}%")
-        st.info("Accuracy = 100 - (MAE / mean(actual)) * 100")
-
-# ---------------------------
-# FORECAST TAB
-# ---------------------------
-with tabs[1]:
-    st.header("📈 Forecast")
-    if daily_model is None or df_daily.empty:
-        st.error("Cannot forecast — missing model or data.")
-    else:
-        forecast_days = st.slider("Forecast Horizon (days)", min_value=7, max_value=90, value=30)
-        try:
-            forecast_values = daily_model.predict(n_periods=forecast_days)
-            forecast_index = pd.date_range(
-                start=df_daily.index[-1] + pd.Timedelta(days=1), 
-                periods=forecast_days, 
-                freq="D"
-            )
-            forecast_df = pd.DataFrame({"forecast": forecast_values}, index=forecast_index)
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily["power_demand"], name="Actual"))
-            fig.add_trace(go.Scatter(x=forecast_df.index, y=forecast_df["forecast"], name="Forecast", line=dict(dash="dash")))
-            fig.update_layout(title=f"{forecast_days}-day Forecast", xaxis_title="Date", yaxis_title="Power Demand", template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("Forecast Data Table")
-            st.dataframe(forecast_df)
-
-            st.download_button("Download CSV", data=forecast_df.to_csv().encode("utf-8"), file_name=f"forecast_{forecast_days}d.csv")
-        except Exception as e:
-            st.error(f"Forecast failed: {e}")
-
-# ---------------------------
-# COMPARISON TAB
-# ---------------------------
-with tabs[2]:
-    st.header("🧩 Comparison")
-    if daily_model is None or df_daily.empty:
-        st.error("Cannot display comparison — missing model or data.")
-    else:
-        try:
-            predicted = daily_model.predict(n_periods=len(df_daily))
-            df_daily["predicted"] = predicted
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily["power_demand"], name="Actual"))
-            fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily["predicted"], name="Predicted", line=dict(dash="dash")))
-            fig.update_layout(title="Daily Actual vs Predicted", xaxis_title="Date", yaxis_title="Power Demand", template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Comparison failed: {e}")
-
-# ---------------------------
-# HOURLY TAB
-# ---------------------------
-with tabs[3]:
-    st.header("⏱️ Hourly Data")
-    if df_hourly.empty:
-        st.warning("Hourly data missing.")
-    else:
-        st.subheader(f"Last 7 Days of Hourly Demand ({df_hourly.index.min().date()} - {df_hourly.index.max().date()})")
-        st.line_chart(df_hourly["power_demand"].tail(24*7))
-        st.caption("Displays hourly power demand.")
-
-# ---------------------------
-# DIAGNOSTICS TAB
-# ---------------------------
-with tabs[4]:
-    st.header("🧠 Model Diagnostics")
-    if daily_model is None:
-        st.info("No daily model loaded.")
-    else:
-        try:
-            resid = daily_model.arima_res_.resid
-            fig_res = go.Figure()
-            fig_res.add_trace(go.Scatter(x=np.arange(len(resid)), y=resid, mode="lines", name="Residuals"))
-            fig_res.update_layout(title="Residuals Over Time", xaxis_title="Index", yaxis_title="Residual Value", template="plotly_white")
-            st.plotly_chart(fig_res, use_container_width=True)
-            st.subheader("Residual Statistics")
-            st.dataframe(pd.Series(resid).describe().round(4))
-        except Exception as e:
-            st.warning(f"Diagnostics unavailable: {e}")
-
-# ---------------------------
-# INSIGHTS TAB
-# ---------------------------
-with tabs[5]:
-    st.header("📊 Insights")
-    if not df_daily.empty:
-        st.subheader("7-day Rolling Average")
-        st.line_chart(df_daily["power_demand"].rolling(7).mean())
-
-        st.subheader("Monthly Average Demand")
-        monthly = df_daily["power_demand"].resample("M").mean()
-        fig_m = go.Figure()
-        fig_m.add_trace(go.Bar(x=monthly.index, y=monthly.values))
-        fig_m.update_layout(title="Monthly Average Power Demand", xaxis_title="Month", yaxis_title="Avg Demand", template="plotly_white")
-        st.plotly_chart(fig_m)
-    else:
-        st.info("No daily data available for insights.")
-
-st.write("---")
-st.caption("Developed by ⚡ Ayush Singh — ARIMA (daily) powered dashboard.")
